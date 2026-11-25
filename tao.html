@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Game hứng táo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      font-family: "Segoe UI", system-ui, Arial, sans-serif;
+      background: #e8eef0;
+      color: #1d2b2f;
+    }
+    h1 { margin: 0; font-size: 1.6rem; }
+
+    /* Bảng thông tin: điểm, mạng sống, nút bắt đầu */
+    .hud {
+      width: 500px;
+      max-width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 1.1rem;
+    }
+    .hud strong { font-size: 1.3rem; }
+    #startBtn {
+      padding: 8px 20px;
+      font-size: 1rem;
+      border: 0;
+      border-radius: 6px;
+      background: #2f7d4f;
+      color: #fff;
+      cursor: pointer;
+    }
+    #startBtn:disabled { background: #9db5a6; cursor: not-allowed; }
+    #startBtn:focus-visible { outline: 3px solid #1d2b2f; outline-offset: 2px; }
+
+    /* Khung game 500 x 400 */
+    #game-container {
+      position: relative;
+      width: 500px;
+      height: 400px;
+      max-width: 100%;
+      overflow: hidden;
+      border: 3px solid #3d5a63;
+      border-radius: 14px;
+      background: #f4fbff;
+    }
+
+    /* Giỏ hứng ở đáy khung */
+    #basket {
+      position: absolute;
+      bottom: 8px;
+      left: 210px;
+      width: 80px;
+      height: 24px;
+      background: #8b5a2b;
+      border-radius: 4px 4px 16px 16px;
+    }
+
+    /* Quả táo rơi theo trục tung (top) */
+    #apple {
+      position: absolute;
+      top: 0;
+      left: 235px;
+      width: 30px;
+      height: 30px;
+      background: #d63a2f;
+      border-radius: 50%;
+    }
+    #apple::after { /* cuống táo */
+      content: "";
+      position: absolute;
+      top: -6px;
+      left: 13px;
+      width: 4px;
+      height: 8px;
+      background: #4a6b2a;
+      border-radius: 2px;
+    }
+
+    /* Thông báo Game Over */
+    #message {
+      display: none;
+      position: absolute;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(29, 43, 47, 0.72);
+      color: #fff;
+      font-size: 2.4rem;
+      font-weight: 700;
+    }
+    #message small { font-size: 1.1rem; font-weight: 400; }
+    #message.show { display: flex; }
+
+    .hint { margin: 0; color: #5b6b74; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <h1>Game hứng táo</h1>
+
+  <div class="hud">
+    <span>Điểm: <strong id="score">0</strong></span>
+    <button id="startBtn" type="button">Bắt đầu</button>
+    <span>Mạng sống: <strong id="lives">3</strong></span>
+  </div>
+
+  <div id="game-container">
+    <div id="apple"></div>
+    <div id="basket"></div>
+    <div id="message" role="alert"></div>
+  </div>
+
+  <p class="hint">Dùng phím mũi tên Trái / Phải để di chuyển giỏ.</p>
+
+  <script>
+    // ===== 1. Lấy phần tử và khai báo hằng số =====
+    const container = document.getElementById("game-container");
+    const basket = document.getElementById("basket");
+    const apple = document.getElementById("apple");
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const messageEl = document.getElementById("message");
+    const startBtn = document.getElementById("startBtn");
+
+    const GAME_W = 500;          // rộng khung game
+    const GAME_H = 400;          // cao khung game
+    const BASKET_W = 80;
+    const BASKET_H = 24;
+    const BASKET_BOTTOM = 8;     // khoảng cách giỏ tới đáy khung
+    const APPLE_SIZE = 30;
+    const BASKET_SPEED = 420;    // px/giây
+    const START_SPEED = 150;     // tốc độ rơi ban đầu, px/giây
+    const SPEED_STEP = 15;       // mỗi lần hứng được, táo rơi nhanh hơn "nhẹ"
+    const MAX_SPEED = 450;
+
+    // ===== 2. Trạng thái game =====
+    let score, lives, appleSpeed;
+    let basketX, appleX, appleY;
+    let running = false;
+    let lastTime = 0;
+    let rafId = null;
+    const keys = { left: false, right: false };
+
+    // ===== 3. Hàm hỗ trợ =====
+    function randomAppleX() {
+      // vị trí ngẫu nhiên theo trục hoành, luôn nằm trong khung
+      return Math.random() * (GAME_W - APPLE_SIZE);
+    }
+
+    function resetApple() {
+      appleX = randomAppleX();
+      appleY = -APPLE_SIZE;      // hồi sinh phía trên đỉnh khung
+    }
+
+    function draw() {
+      basket.style.left = basketX + "px";
+      apple.style.left = appleX + "px";
+      apple.style.top = appleY + "px";
+      scoreEl.textContent = score;
+      livesEl.textContent = lives;
+    }
+
+    // Va chạm: hai hình chữ nhật (táo và giỏ) chồng lên nhau
+    function isCaught() {
+      const basketTop = GAME_H - BASKET_BOTTOM - BASKET_H;
+      const appleBottom = appleY + APPLE_SIZE;
+      const overlapY = appleBottom >= basketTop && appleY <= basketTop + BASKET_H;
+      const overlapX = appleX + APPLE_SIZE > basketX && appleX < basketX + BASKET_W;
+      return overlapX && overlapY;
+    }
+
+    // ===== 4. Vòng lặp game =====
+    function loop(now) {
+      if (!running) return;
+      const dt = Math.min((now - lastTime) / 1000, 0.05); // giây, giới hạn để không "nhảy" khi lag
+      lastTime = now;
+
+      // Di chuyển giỏ, giữ trong khung
+      if (keys.left)  basketX -= BASKET_SPEED * dt;
+      if (keys.right) basketX += BASKET_SPEED * dt;
+      basketX = Math.max(0, Math.min(GAME_W - BASKET_W, basketX));
+
+      // Táo rơi xuống (tăng top)
+      appleY += appleSpeed * dt;
+
+      if (isCaught()) {
+        score += 1;
+        appleSpeed = Math.min(appleSpeed + SPEED_STEP, MAX_SPEED);
+        resetApple();
+      } else if (appleY >= GAME_H) {
+        // chạm đáy mà không hứng được
+        lives -= 1;
+        resetApple();
+        if (lives <= 0) {
+          lives = 0;
+          draw();
+          endGame();
+          return;
+        }
+      }
+
+      draw();
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function startGame() {
+      score = 0;
+      lives = 3;
+      appleSpeed = START_SPEED;
+      basketX = (GAME_W - BASKET_W) / 2;
+      resetApple();
+      keys.left = keys.right = false;
+      messageEl.classList.remove("show");
+      startBtn.disabled = true;
+      draw();
+
+      running = true;
+      lastTime = performance.now();
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      running = false;
+      cancelAnimationFrame(rafId);   // dừng vòng lặp
+      messageEl.innerHTML = "";
+      messageEl.append("Game Over");
+      const small = document.createElement("small");
+      small.textContent = "Điểm của bạn: " + score;
+      messageEl.appendChild(small);
+      messageEl.classList.add("show");
+      startBtn.textContent = "Chơi lại";
+      startBtn.disabled = false;
+    }
+
+    // ===== 5. Sự kiện =====
+    document.addEventListener("keydown", e => {
+      if (e.key === "ArrowLeft")  { keys.left = true;  e.preventDefault(); }
+      if (e.key === "ArrowRight") { keys.right = true; e.preventDefault(); }
+    });
+    document.addEventListener("keyup", e => {
+      if (e.key === "ArrowLeft")  keys.left = false;
+      if (e.key === "ArrowRight") keys.right = false;
+    });
+    startBtn.addEventListener("click", startGame);
+
+    // Trạng thái ban đầu trước khi bấm "Bắt đầu"
+    score = 0; lives = 3; basketX = (GAME_W - BASKET_W) / 2;
+    appleX = (GAME_W - APPLE_SIZE) / 2; appleY = 20;
+    draw();
+  </script>
+</body>
+</html>
